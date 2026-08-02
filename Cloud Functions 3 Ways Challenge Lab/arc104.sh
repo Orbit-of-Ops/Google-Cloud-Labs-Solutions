@@ -1,3 +1,4 @@
+#!/bin/bash
 clear
 
 # ==============================================================================
@@ -38,7 +39,8 @@ export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(pro
 export REGION="us-east4"
 export STORAGE_FUNCTION="cs-monitor"
 export HTTP_FUNCTION="http-responder"
-export BUCKET="gs://$PROJECT_ID"
+export BUCKET_NAME="$PROJECT_ID"
+export BUCKET_URI="gs://$PROJECT_ID"
 
 gcloud config set compute/region $REGION 2>/dev/null
 
@@ -76,7 +78,7 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
     --role="roles/eventarc.eventReceiver" --quiet
 
 echo -e "\n${BOLD}${CYAN}[Orbit of Ops] Task 1: Creating Cloud Storage Bucket in us-east4...${RESET}"
-gsutil mb -l $REGION $BUCKET 2>/dev/null || true
+gsutil mb -l $REGION $BUCKET_URI 2>/dev/null || true
 
 echo -e "\n${BOLD}${CYAN}[Orbit of Ops] Task 2: Writing Source Code for Cloud Storage Function...${RESET}"
 mkdir -p ~/storage_function && cd ~/storage_function
@@ -115,7 +117,7 @@ while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
     --entry-point=$STORAGE_FUNCTION \
     --source=. \
     --region=$REGION \
-    --trigger-bucket=$BUCKET \
+    --trigger-bucket=$BUCKET_NAME \
     --trigger-location=$REGION \
     --max-instances=2 \
     --quiet; then
@@ -135,7 +137,7 @@ fi
 
 echo -e "\n${BOLD}${CYAN}[Orbit of Ops] Task 2: Triggering the function to register activity...${RESET}"
 echo "Triggering the function..." > test-event.txt
-gsutil cp test-event.txt $BUCKET/test-event.txt 2>/dev/null
+gsutil cp test-event.txt $BUCKET_URI/test-event.txt 2>/dev/null
 
 echo -e "\n${BOLD}${CYAN}[Orbit of Ops] Task 3: Writing Source Code for HTTP Function...${RESET}"
 mkdir -p ~/http_function && cd ~/http_function
