@@ -1,4 +1,5 @@
 #!/bin/bash
+set +H
 clear
 
 # ==============================================================================
@@ -30,23 +31,42 @@ echo -e "${MAGENTA}${BOLD} 🚀 Starting Orbit of Ops Master Execution (ARC104).
 echo -e "${BLUE}--------------------------------------------------------------------------------${RESET}\n"
 
 # ==============================================================================
-# PRE-FLIGHT CHECKS & HARDCODED VARIABLES
+# USER INPUT (RESTORED DYNAMIC VARIABLES)
 # ==============================================================================
-echo -e "${BOLD}${YELLOW}[Orbit of Ops] Configuring Environment Variables...${RESET}"
+echo -e "${BOLD}${YELLOW}⚠️ ATTENTION: Check your lab instructions for the following values: ${RESET}"
+
+echo -ne "${BOLD}${CYAN}Enter the Cloud Storage Function Name (Task 2, e.g. cs-logger): ${RESET}"
+read STORAGE_FUNCTION
+
+echo -ne "${BOLD}${CYAN}Enter the HTTP Function Name (Task 3, e.g. http-messenger): ${RESET}"
+read HTTP_FUNCTION
+
+echo -e "\n${BLUE}--------------------------------------------------------------------------------${RESET}\n"
+
+# ==============================================================================
+# PRE-FLIGHT CHECKS
+# ==============================================================================
+echo -e "${BOLD}${YELLOW}[Orbit of Ops] Auto-fetching Project and Region...${RESET}"
 
 export PROJECT_ID=$(gcloud config get-value project 2>/dev/null)
 export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
-export REGION="us-east4"
-export STORAGE_FUNCTION="cs-monitor"
-export HTTP_FUNCTION="http-responder"
 export BUCKET_NAME="$PROJECT_ID"
 export BUCKET_URI="gs://$PROJECT_ID"
+export STORAGE_SA="serviceAccount:service-$PROJECT_NUMBER@gs-project-accounts.iam.gserviceaccount.com"
+export EVENTARC_SA="serviceAccount:service-$PROJECT_NUMBER@gcp-sa-eventarc.iam.gserviceaccount.com"
+
+export REGION=$(gcloud compute project-info describe --format="value(commonInstanceMetadata.items[google-compute-default-region])" 2>/dev/null)
+
+if [[ -z "$REGION" ]]; then
+    echo -e "${BOLD}${RED}⚠️ Could not auto-detect the default region.${RESET}"
+    echo -ne "${BOLD}${CYAN}Please enter the lab Region (e.g., europe-west4): ${RESET}"
+    read REGION
+fi
 
 gcloud config set compute/region $REGION 2>/dev/null
 
 echo -e "✅ Project ID:       ${GREEN}$PROJECT_ID${RESET}"
-echo -e "✅ Project Number:   ${GREEN}$PROJECT_NUMBER${RESET}"
-echo -e "✅ Enforced Region:  ${GREEN}$REGION${RESET}"
+echo -e "✅ Dynamic Region:   ${GREEN}$REGION${RESET}"
 echo -e "✅ Storage Function: ${GREEN}$STORAGE_FUNCTION${RESET}"
 echo -e "✅ HTTP Function:    ${GREEN}$HTTP_FUNCTION${RESET}\n"
 echo -e "${BLUE}--------------------------------------------------------------------------------${RESET}\n"
@@ -66,22 +86,34 @@ gcloud services enable \
   pubsub.googleapis.com \
   --quiet
 
-echo -e "\n${BOLD}${CYAN}[Orbit of Ops] Provisioning Eventarc & Pub/Sub Service Role Bindings...${RESET}"
-SERVICE_ACCOUNT=$(gsutil kms serviceaccount -p $PROJECT_NUMBER)
+echo -e "\n${BOLD}${CYAN}[Orbit of Ops] Task 1: Creating Cloud Storage Bucket in $REGION...${RESET}"
+# Creating the bucket forces Google to generate the Cloud Storage Service Account
+gsutil mb -l $REGION $BUCKET_URI 2>/dev/null || true
 
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-    --member="serviceAccount:$SERVICE_ACCOUNT" \
-    --role="roles/pubsub.publisher" --quiet
+echo -e "\n${BOLD}${CYAN}[Orbit of Ops] Provisioning Eventarc & Pub/Sub Service Role Bindings...${RESET}"
+
+# Robust loop to ensure the service account propagates before binding
+while ! gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="$STORAGE_SA" \
+    --role="roles/pubsub.publisher" --quiet >/dev/null 2>&1; do
+  echo -e "${YELLOW}Waiting for Storage Service Account to initialize in backend...${RESET}"
+  sleep 5
+done
+echo -e "${GREEN}✅ Pub/Sub Publisher role granted to Storage Service Account.${RESET}"
 
 gcloud projects add-iam-policy-binding $PROJECT_ID \
     --member="serviceAccount:$PROJECT_NUMBER-compute@developer.gserviceaccount.com" \
-    --role="roles/eventarc.eventReceiver" --quiet
+    --role="roles/eventarc.eventReceiver" --quiet >/dev/null 2>&1
+echo -e "${GREEN}✅ Eventarc Receiver role granted to Compute Service Account.${RESET}"
 
-echo -e "\n${BOLD}${CYAN}[Orbit of Ops] Task 1: Creating Cloud Storage Bucket in us-east4...${RESET}"
-gsutil mb -l $REGION $BUCKET_URI 2>/dev/null || true
+# FIX: Explicitly grant the Eventarc Service Agent its own role to bypass the permission denied error
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="$EVENTARC_SA" \
+    --role="roles/eventarc.serviceAgent" --quiet >/dev/null 2>&1
+echo -e "${GREEN}✅ Eventarc Service Agent role granted to Eventarc SA.${RESET}"
 
 echo -e "\n${BOLD}${CYAN}[Orbit of Ops] Task 2: Writing Source Code for Cloud Storage Function...${RESET}"
-mkdir -p ~/storage_function && cd ~/storage_function
+mkdir -p ~/storage_function_$STORAGE_FUNCTION && cd ~/storage_function_$STORAGE_FUNCTION
 
 cat << EOF > index.js
 const functions = require('@google-cloud/functions-framework');
@@ -106,7 +138,7 @@ EOF
 echo -e "\n${BOLD}${CYAN}[Orbit of Ops] Task 2: Deploying Cloud Storage Function ($STORAGE_FUNCTION)...${RESET}"
 echo -e "${YELLOW}Note: If Eventarc IAM permissions are still propagating, this step will auto-retry until successful.${RESET}"
 
-MAX_RETRIES=4
+MAX_RETRIES=6
 RETRY_COUNT=0
 DEPLOY_SUCCESS=false
 
@@ -140,7 +172,7 @@ echo "Triggering the function..." > test-event.txt
 gsutil cp test-event.txt $BUCKET_URI/test-event.txt 2>/dev/null
 
 echo -e "\n${BOLD}${CYAN}[Orbit of Ops] Task 3: Writing Source Code for HTTP Function...${RESET}"
-mkdir -p ~/http_function && cd ~/http_function
+mkdir -p ~/http_function_$HTTP_FUNCTION && cd ~/http_function_$HTTP_FUNCTION
 
 cat << EOF > index.js
 const functions = require('@google-cloud/functions-framework');
